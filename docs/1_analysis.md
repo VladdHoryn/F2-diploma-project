@@ -1,42 +1,249 @@
-# 1. АНАЛІЗ ПРЕДМЕТНОЇ ОБЛАСТІ
+# 1. Domain Analysis and Requirements
 
-## 1.2 Аналіз існуючих аналогів
+## 1.1. Project Overview
 
-У межах дослідження предметної області проведено інженерний аналіз трьох існуючих програмних рішень, що частково реалізують функціонал колаборативного програмування та алгоритмічного тестування: Codeshare.io, LeetCode та рушія спільного редагування Google Docs.
+The project aims to develop a microservice web platform
+for algorithmic testing and real-time pair programming.
 
-### 1.2.1 Інженерний опис систем-аналогів
+The platform combines secure execution of user-submitted
+code, automated algorithmic assessment, and collaborative
+programming sessions.
 
-**1. Codeshare.io (Колаборативний редактор коду)**
-*   **Архітектурний патерн та масштабованість:** Система базується на легковаговій клієнт-серверній архітектурі, орієнтованій на обробку I/O операцій. Масштабування здійснюється горизонтально через розгортання додаткових інстансів за Load Balancer. Маршрутизація вимагає механізмів Sticky Sessions (або централізованого Pub/Sub брокера) для синхронізації клієнтів однієї сесії.
-*   **Протоколи передачі даних:** Використовується протокол WebSockets для забезпечення двонаправленого повнодуплексного зв'язку. REST API застосовується виключно для первинної ініціалізації сесії.
-*   **Базовий стек даних:** Зафіксовано високу залежність від In-Memory сховищ (Redis) для зберігання тимчасового стану кімнат. Для персистенції використовуються PostgreSQL або MongoDB із забезпеченням Strong Consistency у межах одного вузла.
-*   **Критичні інженерні недоліки (Bottlenecks):** Відсутність підсистеми ізольованого виконання коду (Code Execution Engine); ризик витоків пам'яті (Memory Leaks) при тривалому утриманні тисяч активних WebSocket-з'єднань; деградація продуктивності (Latency spike) через експоненційне зростання broadcast-повідомлень.
+The main engineering challenges include:
 
-**2. LeetCode (Платформа алгоритмічного тестування)**
-*   **Архітектурний патерн та масштабованість:** Реалізовано складну мікросервісну архітектуру з використанням API Gateway та патерну Worker Queue. Ключовим компонентом є кластер ізольованих Worker-вузлів, що динамічно масштабуються залежно від навантаження на чергу компіляції.
-*   **Протоколи передачі даних:** Для зовнішньої взаємодії використовується REST API та GraphQL. Внутрішня міжсервісна комунікація реалізована через RPC-протоколи (gRPC) та черги повідомлень (RabbitMQ/Kafka).
-*   **Базовий стек даних:** PostgreSQL для реляційних сутностей, Redis/Memcached для кешування та Rate Limiting, DynamoDB для зберігання історії транзакцій (із застосуванням Eventual Consistency).
-*   **Критичні інженерні недоліки (Bottlenecks):** Затримки при «холодних стартах» (Cold Starts) ефемерних Docker-контейнерів; висока вартість утримання розігрітого пулу (Warm Pool) інфраструктури; складність управління життєвим циклом контейнерів (Zombie containers).
+- Secure execution of untrusted source code.
+- Isolation of execution environments.
+- Resource management and workload distribution.
+- Low-latency synchronization of collaborative editing.
+- Concurrent modification conflict resolution.
+- Authentication and authorization.
 
-**3. Google Docs Collaboration Engine (Рушій спільного редагування)**
-*   **Архітектурний патерн та масштабованість:** Розподілена архітектура на базі спеціалізованих Document Servers. Масштабованість забезпечується шардуванням. Для вирішення конфліктів використовуються алгоритми Operational Transformation (OT) / Conflict-free Replicated Data Types (CRDT).
-*   **Протоколи передачі даних:** Оптимізовані WebSockets із фолбеком на HTTP Long-polling. Внутрішня комунікація базується на Stubby.
-*   **Базовий стек даних:** In-Memory структури даних для обчислення трансформацій. Персистентне зберігання забезпечується глобально розподіленою СУБД Google Spanner (External Consistency через TrueTime API).
-*   **Критичні інженерні недоліки (Bottlenecks):** Високе споживання серверної RAM для зберігання історії операцій (Transformation History Log); підвищене навантаження на клієнтський CPU; відсутність підтримки абстрактних синтаксичних дерев (AST) для мов програмування.
+## 1.2. As-Is Analysis
 
-### 1.2.2 Порівняльна інженерна матриця та аналітичний висновок
+### 1.2.1. Existing Solutions
 
-Таблиця 1.1 — Порівняльна інженерна матриця систем-аналогів та проєктованого рішення
+The domain analysis considers the following solutions:
 
-| Критерій | Проєктована система | Codeshare.io | LeetCode | Google Docs (Рушій) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Архітектурний патерн** | Мікросервіси (Event-Driven), Worker Queue | Клієнт-сервер (I/O оптимізований) | Мікросервіси, Worker Queue | Розподілена архітектура |
-| **Протоколи взаємодії** | REST API, WebSockets/STOMP, AMQP (RabbitMQ) | WebSockets, REST (init) | REST API, GraphQL, gRPC | WebSockets, Stubby (gRPC) |
-| **Code Execution Engine** | Ізольовані Docker-контейнери (ефемерні) | Відсутній | Ізольовані Worker-вузли | Відсутній |
-| **СУБД / Кешування** | PostgreSQL, Redis | PostgreSQL, Redis | PostgreSQL, DynamoDB, Redis | Google Spanner, In-Memory |
-| **Алгоритм синхронізації** | CRDT/OT через WebSockets | Трансляція подій (Pub/Sub) | Відсутня | Оптимізований OT / CRDT |
-| **Відомі обмеження** | *Мінімізація за рахунок архітектури* | Memory Leaks, Latency при I/O | Cold Starts, вартість інфраструктури | Високе споживання RAM |
+- Codeshare.io — collaborative source-code editing.
+- LeetCode — algorithmic programming and automated assessment.
+- Google Docs Collaboration Engine — real-time collaborative
+  document editing.
 
-За результатами проведеного інженерного аналізу виявлено критичні архітектурні обмеження існуючих рішень у контексті забезпечення комплексної функціональності колаборативного програмування. Легковагові платформи демонструють високу залежність від In-Memory сховищ для підтримки WebSocket-з'єднань, що призводить до деградації продуктивності та не забезпечує безпечного середовища виконання коду. Спеціалізовані системи тестування пропонують надійні механізми sandboxing-у, проте стикаються із затримками при Cold Starts і не підтримують low-latency синхронізацію редактора.
+The following comparison reflects the preliminary
+engineering analysis. Descriptions of internal architectures
+and implementation details should be treated as analytical
+assumptions unless independently confirmed by public
+technical documentation.
 
-У межах кваліфікаційної роботи передбачено реалізацію мікросервісної архітектури, що нівелює виявлені технічні ботлнеки шляхом гібридного застосування подієво-орієнтованого підходу (Event-Driven Architecture) та патерну Worker Queue. Використання брокера RabbitMQ для маршрутизації завдань розвантажує основний API та дозволяє масштабувати Code Execution Engine, а Rate Limiting на базі Redis запобігає вичерпанню ресурсів (DDoS). Інтеграція протоколу WebSockets (STOMP) спільно з алгоритмами CRDT/OT забезпечує консистентну синхронізацію тексту. Визначений стек (Java Spring Boot, Docker, PostgreSQL) гарантує строгу ізоляцію untrusted code та усуває вразливості типу Remote Code Execution (RCE), що формує технічне підґрунтя для переходу до етапу проєктування ER-моделей даних та API-контрактів системи у наступному розділі.
+| Criterion | Codeshare.io | LeetCode | Google Docs | Proposed Platform |
+|---|---|---|---|---|
+| Main purpose | Collaborative editing | Algorithmic assessment | Collaborative documents | Assessment and pair programming |
+| Architecture | Client-server | Service-oriented | Distributed collaboration | Microservices |
+| Communication | WebSocket | REST / asynchronous processing | Real-time synchronization | REST, WebSocket/STOMP, AMQP |
+| Code execution | Not a core capability | Isolated execution | Not a core capability | Docker-based sandbox |
+| Data storage | Session state and persistence | Persistent data and caching | Distributed document state | PostgreSQL and Redis |
+| Synchronization | Shared editing | Not primary | OT/CRDT-like approaches | CRDT/OT |
+| Main engineering focus | Collaboration | Code assessment | Document consistency | Secure execution and collaboration |
+
+### 1.2.2. Identified Problems
+
+The preliminary analysis identifies several engineering
+problems:
+
+1. Collaborative editors require efficient management
+   of long-lived connections and shared session state.
+
+2. Algorithmic assessment platforms must isolate
+   user-submitted code from the host environment.
+
+3. Resource-intensive compilation and execution
+   can affect the responsiveness of other services.
+
+4. Collaborative editing requires consistency when
+   multiple users modify the same document.
+
+5. A centralized authentication mechanism is needed
+   to manage access to platform resources.
+
+### 1.2.3. Engineering Constraints
+
+The proposed solution must account for:
+
+- Remote Code Execution (RCE) risks.
+- CPU and memory consumption by user programs.
+- Maximum execution time.
+- Container lifecycle management.
+- Network isolation of execution environments.
+- Message delivery and asynchronous task processing.
+- WebSocket connection scalability.
+- Concurrent editing conflicts.
+- Authentication and role-based authorization.
+
+## 1.3. To-Be Model
+
+### 1.3.1. System Architecture
+
+The target system follows a cloud-native microservice
+architecture.
+
+The API Gateway provides a common entry point for
+client requests.
+
+Backend services handle business operations,
+authentication integration, session management,
+assessment, and execution coordination.
+
+RabbitMQ provides asynchronous communication between
+services and execution workers.
+
+The Code Execution Engine provisions temporary Docker
+containers to execute submitted programs in isolation.
+
+PostgreSQL stores persistent application data,
+while Redis supports caching and rate limiting.
+
+WebSocket/STOMP provides real-time communication
+between participants of collaborative sessions.
+
+CRDT or Operational Transformation (OT) is considered
+for resolving concurrent editing operations.
+
+### 1.3.2. Core Features
+
+#### CF-01. User Authentication and Authorization
+
+- Centralized authentication through Keycloak.
+- OAuth2/OIDC integration.
+- Role-Based Access Control (RBAC).
+- Protected access to platform resources.
+
+#### CF-02. Algorithmic Assessment
+
+- Access to programming tasks.
+- Submission of source code.
+- Compilation and execution of submitted solutions.
+- Automated verification using test cases.
+- Support for hidden test cases.
+
+#### CF-03. Isolated Code Execution
+
+- Dynamic provisioning of execution containers.
+- CPU, RAM and execution-time restrictions.
+- Network isolation.
+- Automatic cleanup of temporary containers.
+
+#### CF-04. Asynchronous Execution Processing
+
+- Submission of execution jobs to RabbitMQ.
+- Distribution of jobs between Worker Nodes.
+- Asynchronous result processing.
+- Separation of resource-intensive operations
+  from request-handling services.
+
+#### CF-05. Real-Time Collaborative Editing
+
+- Shared programming sessions.
+- WebSocket/STOMP communication.
+- Synchronization of editor changes.
+- Concurrent editing support.
+
+#### CF-06. Conflict Resolution
+
+- Consideration of CRDT or OT algorithms.
+- Consistent document state across participants.
+- Handling of concurrent editing operations.
+
+#### CF-07. Execution History and Results
+
+- Storage of execution results.
+- Access to previous submissions.
+- Recording of execution logs.
+- Display of assessment results.
+
+#### CF-08. Infrastructure Protection and Monitoring
+
+- Redis-based Rate Limiting.
+- Authentication and authorization checks.
+- Execution resource monitoring.
+- Container lifecycle management.
+
+## 1.4. Functional Requirements
+
+| ID | Requirement |
+|---|---|
+| FR-01 | The system shall authenticate users through Keycloak using OAuth2/OIDC. |
+| FR-02 | The system shall enforce role-based access control. |
+| FR-03 | The system shall provide access to algorithmic programming tasks. |
+| FR-04 | The system shall accept source-code submissions. |
+| FR-05 | The system shall execute submitted code in isolated Docker containers. |
+| FR-06 | The system shall enforce CPU, RAM and execution-time limits. |
+| FR-07 | The system shall distribute execution jobs through RabbitMQ. |
+| FR-08 | The system shall verify solutions using test cases, including hidden tests. |
+| FR-09 | The system shall support real-time collaborative editing through WebSocket/STOMP. |
+| FR-10 | The system shall handle concurrent editing operations using CRDT or OT. |
+| FR-11 | The system shall store execution results and history. |
+| FR-12 | The system shall apply Rate Limiting to protect platform resources. |
+
+## 1.5. Non-Functional Requirements
+
+The following values are project targets and must be
+validated during implementation and testing.
+
+| ID | Category | Requirement | Target |
+|---|---|---|---|
+| NFR-01 | Performance | API response time | p95 <= 300 ms at 50 RPS |
+| NFR-02 | Performance | WebSocket latency | p95 <= 300 ms with 50 participants |
+| NFR-03 | Scalability | Concurrent active users | 100 |
+| NFR-04 | Scalability | Parallel execution workers | 10 |
+| NFR-05 | Security | Authentication protocol | OAuth2/OIDC |
+| NFR-06 | Security | Transport encryption | TLS 1.2+ |
+| NFR-07 | Security | Execution isolation | Ephemeral Docker containers |
+| NFR-08 | Security | Execution restrictions | CPU, RAM and time limits |
+| NFR-09 | Security | Container network access | Blocked |
+| NFR-10 | Reliability | Availability target | 99% |
+| NFR-11 | Reliability | Recovery Time Objective | <= 4 hours |
+| NFR-12 | Reliability | Recovery Point Objective | <= 24 hours |
+| NFR-13 | Execution | Maximum execution time | 10 seconds |
+| NFR-14 | Execution | Container cleanup | <= 5 seconds |
+| NFR-15 | Quality | Backend line coverage | >= 70% |
+
+## 1.6. Task Statement
+
+The task is to design and develop a microservice web
+platform for algorithmic testing and real-time pair
+programming.
+
+The platform must provide secure execution of untrusted
+user code through isolated Docker containers, asynchronous
+job processing through RabbitMQ, and real-time collaborative
+editing using WebSocket/STOMP.
+
+The solution must integrate centralized authentication
+through Keycloak, persistent data storage through
+PostgreSQL, and caching and rate limiting through Redis.
+
+The developed platform must satisfy the specified
+functional and non-functional requirements and undergo
+testing to validate its security, performance,
+reliability and scalability.
+
+## 1.7. Analysis Conclusions
+
+The domain analysis identified the need to combine
+automated algorithmic assessment with real-time
+collaborative programming.
+
+The proposed architecture separates business operations
+from resource-intensive code execution. RabbitMQ
+provides asynchronous task distribution, while
+isolated Docker containers reduce the risks associated
+with executing untrusted source code.
+
+WebSocket/STOMP enables real-time communication,
+while CRDT or OT provides candidate approaches for
+resolving concurrent editing operations.
+
+The analysis also established functional requirements
+and measurable non-functional targets. These requirements
+will serve as the basis for detailed architecture design,
+implementation and subsequent validation.
